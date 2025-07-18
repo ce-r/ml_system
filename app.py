@@ -7,17 +7,16 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Dict, List, Optional, Any
-import pandas as pd
 import numpy as np
-import torch
-import torch.nn as nn
 from datetime import datetime
-import redis
-import asyncpg
-import motor.motor_asyncio
-import jwt
 import json
 import logging
+import time
+import random
+import os
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+import psutil
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +28,12 @@ app = FastAPI(
     description="Free ML Platform for Students",
     version="1.0.0"
 )
+
+# Prometheus metrics
+REQUEST_COUNT = Counter('app_requests_total', 'Total app requests', ['method', 'endpoint'])
+REQUEST_LATENCY = Histogram('app_request_duration_seconds', 'Request latency')
+PREDICTION_COUNT = Counter('predictions_total', 'Total predictions made')
+MODEL_TRAINING_COUNT = Counter('model_training_total', 'Total model training jobs')
 
 # Configuration (all local, no cloud services)
 class Config:
@@ -47,291 +52,297 @@ class Config:
 
 config = Config()
 
+# Create directories
+os.makedirs(config.MODEL_PATH, exist_ok=True)
+os.makedirs(config.DATA_PATH, exist_ok=True)
+
 # Security
 security = HTTPBearer()
 
-# Simple models for demonstration
-class UserCreate(BaseModel):
+# Mock databases (since we're running without external deps for now)
+users_db = {
+    "student1": {"password": "pass123", "id": 1, "role": "student"},
+    "admin": {"password": "admin123", "id": 2, "role": "admin"}
+}
+
+models_db = {}
+datasets_db = {}
+
+# Simple ML model class (mock)
+class SimpleMLModel:
+    def __init__(self, input_size=10, hidden_size=20, output_size=1):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.weights = np.random.randn(input_size, output_size)
+        self.bias = np.random.randn(output_size)
+        
+    def forward(self, x):
+        # Simple linear transformation
+        return np.dot(x, self.weights) + self.bias
+    
+    def train(self, X, y, epochs=100):
+        # Mock training - just simulate
+        for epoch in range(epochs):
+            time.sleep(0.01)  # Simulate training time
+            if epoch % 20 == 0:
+                logger.info(f"Training epoch {epoch}/{epochs}")
+    
+    def save(self, path):
+        np.savez(path, weights=self.weights, bias=self.bias)
+    
+    def load(self, path):
+        data = np.load(path)
+        self.weights = data['weights']
+        self.bias = data['bias']
+
+# Data models
+class UserModel(BaseModel):
     username: str
     password: str
-    email: str
+    role: str = "student"
 
-class FeatureData(BaseModel):
-    entity_id: str
-    features: Dict[str, float]
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
-class PredictionRequest(BaseModel):
-    model_name: str
-    features: Dict[str, float]
+class DatasetUpload(BaseModel):
+    name: str
+    description: str
+    data: List[Dict[str, Any]]
 
-    class Config:
-        protected_namespaces = ()
+class ModelRequest(BaseModel):
+    name: str
+    model_type: str = "linear"
+    parameters: Dict[str, Any] = {}
 
 class TrainingRequest(BaseModel):
     model_name: str
-    dataset_path: str
-    epochs: int = 10
+    dataset_name: str
+    epochs: int = 100
+    learning_rate: float = 0.01
 
-    class Config: # not a redefinition, Config is a special pydantic nested class used to configure 
-                  # behavior of outer model. By default, Pydantic protects field names like model_, schema_, etc
-        protected_namespaces = ()
+class PredictionRequest(BaseModel):
+    model_name: str
+    inputs: List[float]
 
-# Simple PyTorch model for demonstration
-class SimpleModel(nn.Module):
-    def __init__(self, input_size=10, hidden_size=64, output_size=1):
-        super().__init__()
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, output_size)
-        self.sigmoid = nn.Sigmoid()
-   
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.sigmoid(x)
-        return x
-
-# In-memory storage for demo (in production, use databases)
-users_db = {}
-models_db = {}
-features_db = {}
+# Middleware for metrics
+@app.middleware("http")
+async def metrics_middleware(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    REQUEST_COUNT.labels(method=request.method, endpoint=request.url.path).inc()
+    REQUEST_LATENCY.observe(process_time)
+    
+    return response
 
 # Helper functions
-def create_token(user_id: str) -> str:
-    """Create JWT token"""
-    payload = {
-        "user_id": user_id,
-        "exp": datetime.utcnow().timestamp() + 86400  # 24 hours
-    }
-    return jwt.encode(payload, config.JWT_SECRET, algorithm=config.JWT_ALGORITHM)
-
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify JWT token"""
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    # Simple token verification (for learning purposes)
     token = credentials.credentials
-    try:
-        payload = jwt.decode(token, config.JWT_SECRET, algorithms=[config.JWT_ALGORITHM])
-        return payload["user_id"]
-    except:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    if token in ["student-token", "admin-token"]:
+        return {"username": "student1" if token == "student-token" else "admin"}
+    raise HTTPException(status_code=401, detail="Invalid token")
 
-# Endpoints
+# Routes
 @app.get("/")
 async def root():
-    """Welcome endpoint"""
     return {
-        "message": "Welcome to ML Platform (Local Edition)",
-        "docs": "/docs",
-        "features": [
-            "User Authentication",
-            "Feature Store",
-            "Model Training",
-            "Model Serving",
-            "Real-time Predictions"
-        ],
-        "cost": "$0 - Everything runs locally!"
+        "message": "Welcome to ML Platform (Local)",
+        "version": "1.0.0",
+        "services": ["models", "datasets", "training", "predictions"],
+        "status": "running"
     }
 
 @app.get("/health")
 async def health_check():
-    """Health check"""
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "api": "running",
-            "database": "local",
-            "redis": "local",
-            "storage": "local filesystem"
-        }
+        "timestamp": datetime.now().isoformat(),
+        "uptime": time.time(),
+        "memory_usage": psutil.virtual_memory().percent,
+        "cpu_usage": psutil.cpu_percent()
     }
 
-# Authentication endpoints
 @app.post("/auth/register")
-async def register(user: UserCreate):
-    """Register new user"""
+async def register(user: UserModel):
     if user.username in users_db:
         raise HTTPException(status_code=400, detail="User already exists")
-   
-    # Simple password hashing (use bcrypt in production)
+    
     users_db[user.username] = {
-        "password": user.password,  # Don't do this in production!
-        "email": user.email,
-        "created_at": datetime.utcnow().isoformat()
+        "password": user.password,
+        "id": len(users_db) + 1,
+        "role": user.role
     }
-   
-    return {"message": "User created successfully", "username": user.username}
+    
+    logger.info(f"User {user.username} registered")
+    return {"message": "User registered successfully", "user_id": users_db[user.username]["id"]}
 
 @app.post("/auth/login")
-async def login(username: str, password: str):
-    """Login user"""
-    if username not in users_db or users_db[username]["password"] != password:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-   
-    token = create_token(username)
-    return {"access_token": token, "token_type": "bearer"}
+async def login(request: LoginRequest):
+    if request.username not in users_db:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    user = users_db[request.username]
+    if user["password"] != request.password:
+        raise HTTPException(status_code=401, detail="Invalid password")
+    
+    # Return simple token for demo
+    token = f"{user['role']}-token"
+    logger.info(f"User {request.username} logged in")
+    return {"access_token": token, "token_type": "bearer", "user_id": user["id"]}
 
-# Feature Store endpoints
-@app.post("/features/store")
-async def store_features(data: FeatureData, user_id: str = Depends(get_current_user)):
-    """Store features"""
-    if data.entity_id not in features_db:
-        features_db[data.entity_id] = {}
-   
-    features_db[data.entity_id].update(data.features)
-    features_db[data.entity_id]["updated_at"] = datetime.utcnow().isoformat()
-   
-    return {"message": "Features stored successfully", "entity_id": data.entity_id}
+@app.post("/datasets/upload")
+async def upload_dataset(dataset: DatasetUpload, user: dict = Depends(verify_token)):
+    dataset_id = f"dataset_{len(datasets_db) + 1}"
+    
+    datasets_db[dataset.name] = {
+        "id": dataset_id,
+        "name": dataset.name,
+        "description": dataset.description,
+        "data": dataset.data,
+        "created_at": datetime.now().isoformat(),
+        "created_by": user["username"],
+        "size": len(dataset.data)
+    }
+    
+    # Save to file
+    dataset_path = os.path.join(config.DATA_PATH, f"{dataset.name}.json")
+    with open(dataset_path, 'w') as f:
+        json.dump(dataset.data, f)
+    
+    logger.info(f"Dataset {dataset.name} uploaded by {user['username']}")
+    return {"message": "Dataset uploaded successfully", "dataset_id": dataset_id}
 
-@app.get("/features/{entity_id}")
-async def get_features(entity_id: str, user_id: str = Depends(get_current_user)):
-    """Get features for entity"""
-    if entity_id not in features_db:
-        raise HTTPException(status_code=404, detail="Entity not found")
-   
-    return features_db[entity_id]
+@app.get("/datasets")
+async def list_datasets(user: dict = Depends(verify_token)):
+    return {"datasets": list(datasets_db.values())}
 
-# Model Training endpoints
-@app.post("/models/train")
-async def train_model(request: TrainingRequest, user_id: str = Depends(get_current_user)):
-    """Train a simple model"""
-    try:
-        # Create simple model
-        model = SimpleModel()
-       
-        # Generate dummy training data
-        X = torch.randn(1000, 10)
-        y = torch.randint(0, 2, (1000, 1)).float()
-       
-        # Simple training loop
-        optimizer = torch.optim.Adam(model.parameters())
-        criterion = nn.BCELoss()
-       
-        for epoch in range(request.epochs):
-            optimizer.zero_grad()
-            outputs = model(X)
-            loss = criterion(outputs, y)
-            loss.backward()
-            optimizer.step()
-       
-        # Save model
-        model_path = f"{config.MODEL_PATH}/{request.model_name}.pth"
-        torch.save(model.state_dict(), model_path)
-       
-        # Store model metadata
-        models_db[request.model_name] = {
-            "path": model_path,
-            "trained_by": user_id,
-            "trained_at": datetime.utcnow().isoformat(),
-            "epochs": request.epochs,
-            "status": "ready"
-        }
-       
-        return {
-            "message": "Model trained successfully",
-            "model_name": request.model_name,
-            "final_loss": float(loss.item())
-        }
-       
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/models/create")
+async def create_model(request: ModelRequest, user: dict = Depends(verify_token)):
+    model_id = f"model_{len(models_db) + 1}"
+    
+    # Create simple model
+    model = SimpleMLModel()
+    model_path = os.path.join(config.MODEL_PATH, f"{request.name}.npz")
+    model.save(model_path)
+    
+    models_db[request.name] = {
+        "id": model_id,
+        "name": request.name,
+        "type": request.model_type,
+        "parameters": request.parameters,
+        "path": model_path,
+        "created_at": datetime.now().isoformat(),
+        "created_by": user["username"],
+        "status": "created"
+    }
+    
+    logger.info(f"Model {request.name} created by {user['username']}")
+    return {"message": "Model created successfully", "model_id": model_id}
 
 @app.get("/models")
-async def list_models(user_id: str = Depends(get_current_user)):
-    """List available models"""
-    return {
-        "models": [
-            {
-                "name": name,
-                "status": info["status"],
-                "trained_at": info["trained_at"]
-            }
-            for name, info in models_db.items()
-        ]
-    }
+async def list_models(user: dict = Depends(verify_token)):
+    return {"models": list(models_db.values())}
 
-# Prediction endpoints
-@app.post("/predict")
-async def predict(request: PredictionRequest, user_id: str = Depends(get_current_user)):
-    """Make prediction"""
+@app.post("/training/start")
+async def start_training(request: TrainingRequest, user: dict = Depends(verify_token)):
     if request.model_name not in models_db:
         raise HTTPException(status_code=404, detail="Model not found")
-   
-    try:
-        # Load model
-        model = SimpleModel()
-        model.load_state_dict(torch.load(models_db[request.model_name]["path"]))
-        model.eval()
-       
-        # Prepare input
-        input_values = list(request.features.values())
-        input_tensor = torch.tensor(input_values).float().unsqueeze(0)
-       
-        # Make prediction
-        with torch.no_grad():
-            output = model(input_tensor)
-            prediction = output.item()
-       
-        return {
-            "model_name": request.model_name,
-            "prediction": prediction,
-            "probability": prediction,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-       
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# WebSocket for real-time features (simplified)
-from fastapi import WebSocket
-
-@app.websocket("/ws/features/{entity_id}")
-async def websocket_features(websocket: WebSocket, entity_id: str):
-    """WebSocket for real-time feature updates"""
-    await websocket.accept()
-    try:
-        while True:
-            # Send current features
-            if entity_id in features_db:
-                await websocket.send_json({
-                    "entity_id": entity_id,
-                    "features": features_db[entity_id],
-                    "timestamp": datetime.utcnow().isoformat()
-                })
-           
-            # Wait for updates (simplified - in production use pub/sub)
-            await asyncio.sleep(5)
-           
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        await websocket.close()
-
-# A/B Testing (simplified)
-@app.post("/experiments/create")
-async def create_experiment(
-    name: str,
-    model_a: str,
-    model_b: str,
-    split: float = 0.5,
-    user_id: str = Depends(get_current_user)
-):
-    """Create A/B test"""
+    
+    if request.dataset_name not in datasets_db:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Simulate training
+    model = SimpleMLModel()
+    model.load(models_db[request.model_name]["path"])
+    
+    # Mock training data
+    X = np.random.randn(1000, 10)
+    y = np.random.randint(0, 2, (1000, 1)).float()
+    
+    logger.info(f"Starting training for model {request.model_name}")
+    model.train(X, y, epochs=request.epochs)
+    
+    # Save trained model
+    model_path = models_db[request.model_name]["path"]
+    model.save(model_path)
+    
+    models_db[request.model_name]["status"] = "trained"
+    models_db[request.model_name]["last_trained"] = datetime.now().isoformat()
+    
+    MODEL_TRAINING_COUNT.inc()
+    logger.info(f"Training completed for model {request.model_name}")
+    
     return {
-        "experiment_id": f"exp_{name}",
-        "model_a": model_a,
-        "model_b": model_b,
-        "traffic_split": split,
-        "status": "active"
+        "message": "Training completed successfully",
+        "model_name": request.model_name,
+        "epochs": request.epochs,
+        "status": "trained"
+    }
+
+@app.post("/predict")
+async def predict(request: PredictionRequest, user: dict = Depends(verify_token)):
+    if request.model_name not in models_db:
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    model_info = models_db[request.model_name]
+    if model_info["status"] != "trained":
+        raise HTTPException(status_code=400, detail="Model not trained yet")
+    
+    # Load model and make prediction
+    model = SimpleMLModel()
+    model.load(model_info["path"])
+    
+    input_array = np.array(request.inputs)
+    if len(input_array.shape) == 1:
+        input_array = input_array.reshape(1, -1)
+    
+    prediction = model.forward(input_array)
+    
+    PREDICTION_COUNT.inc()
+    logger.info(f"Prediction made with model {request.model_name}")
+    
+    return {
+        "model_name": request.model_name,
+        "inputs": request.inputs,
+        "prediction": prediction.tolist(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/monitoring/metrics")
+async def get_metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/monitoring/stats")
+async def get_stats(user: dict = Depends(verify_token)):
+    """System statistics"""
+    return {
+        "system": {
+            "cpu_percent": psutil.cpu_percent(),
+            "memory": {
+                "total": psutil.virtual_memory().total,
+                "available": psutil.virtual_memory().available,
+                "percent": psutil.virtual_memory().percent
+            },
+            "disk": {
+                "total": psutil.disk_usage('/').total,
+                "free": psutil.disk_usage('/').free,
+                "percent": psutil.disk_usage('/').percent
+            }
+        },
+        "application": {
+            "total_users": len(users_db),
+            "total_models": len(models_db),
+            "total_datasets": len(datasets_db),
+            "uptime": time.time()
+        }
     }
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-   
-    # Create directories
-    os.makedirs(config.MODEL_PATH, exist_ok=True)
-    os.makedirs(config.DATA_PATH, exist_ok=True)
-   
-    # Run server
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    logger.info("Starting ML Platform (Local)")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
