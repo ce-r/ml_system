@@ -1,5 +1,5 @@
 Runs an ML system locally at no cost with an application that simulates data and prediction on data requested from a database pool. 
-Monitors health of system. 
+The system has several features including monitoring health of system. 
 Resources and tools: Redis, PostgreSQL, MongoDB, MinIO, Terraform, Kubernetes, Ansible, Pytorch etc
 
 This production grade system is a prototype for personal projects regarding stock prediction with numerical and text data for LLM processing/prediction.
