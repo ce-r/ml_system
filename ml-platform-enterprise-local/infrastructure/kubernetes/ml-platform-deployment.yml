@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-platform-api
+  namespace: ml-platform
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ml-platform-api
+  template:
+    metadata:
+      labels:
+        app: ml-platform-api
+    spec:
+      containers:
+      - name: api
+        image: localhost:32770/ml-platform:latest
+        imagePullPolicy: Never 
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://mluser:mlpass123@host.minikube.internal:5432/mlplatform"
+        - name: REDIS_URL
+          value: "redis://:redispass123@host.minikube.internal:6379"
+        - name: MONGODB_URL
+          # value: "mongodb://admin:mongopass123@host.docker.internal:27017/mlplatform?authSource=admin&directConnection=true"
+          # value: "mongodb://admin:mongopass123@host.minikube.internal:27017/mlplatform"
+          value: "mongodb://admin:mongopass123@host.minikube.internal:27017/mlplatform?authSource=admin"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "host.minikube.internal:9092"
+        - name: MINIO_ENDPOINT
+          value: "host.minikube.internal:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin123"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-platform-api
+  namespace: ml-platform
+spec:
+  selector:
+    app: ml-platform-api
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: NodePort
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ml-platform-ingress
+  namespace: ml-platform
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: ml-platform.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ml-platform-api
+            port:
+              number: 8000

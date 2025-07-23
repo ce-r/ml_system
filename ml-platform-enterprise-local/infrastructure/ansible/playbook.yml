@@ -1,0 +1,57 @@
+---
+- name: Setup ML Platform Infrastructure
+  hosts: localhost
+  become: yes
+  vars:
+    ml_platform_dir: "{{ lookup('env', 'PROJECT_DIR') }}"
+    
+  tasks:
+    - name: Ensure Docker is running
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+    
+    - name: Create required directories
+      file:
+        path: "{{ ml_platform_dir }}/{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+      loop:
+        - data/postgres
+        - data/redis
+        - data/mongodb
+        - data/minio
+        - data/models
+        - logs
+        - configs
+        - secrets
+    
+    - name: Generate secrets
+      shell: |
+        openssl rand -base64 32 > {{ ml_platform_dir }}/secrets/jwt_secret
+        openssl rand -base64 32 > {{ ml_platform_dir }}/secrets/db_password
+        openssl rand -base64 32 > {{ ml_platform_dir }}/secrets/redis_password
+      args:
+        creates: "{{ ml_platform_dir }}/secrets/jwt_secret"
+    
+    - name: Set permissions on secrets
+      file:
+        path: "{{ ml_platform_dir }}/secrets"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+        recurse: yes
+    
+    - name: Create Docker network
+      docker_network:
+        name: ml-platform-network
+    
+    - name: Install Python docker module for Ansible
+      apt:
+        name: python3-docker
+        state: present
+        update_cache: yes

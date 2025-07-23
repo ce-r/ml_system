@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  # Redis Master with full configuration
+  redis-master:
+    image: redis:7-alpine
+    container_name: ml-redis-master
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_master:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - ml-platform-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redispass123", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Replica 1
+  redis-replica-1:
+    image: redis:7-alpine
+    container_name: ml-redis-replica-1
+    command: redis-server --slaveof redis-master 6379 --masterauth redispass123 --requirepass redispass123
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_replica_1:/data
+    networks:
+      - ml-platform-network
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  # Redis Replica 2
+  redis-replica-2:
+    image: redis:7-alpine
+    container_name: ml-redis-replica-2
+    command: redis-server --slaveof redis-master 6379 --masterauth redispass123 --requirepass redispass123
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_replica_2:/data
+    networks:
+      - ml-platform-network
+    depends_on:
+      redis-master:
+        condition: service_healthy
+
+  # Redis Sentinel 1
+  redis-sentinel-1:
+    image: redis:7-alpine
+    container_name: ml-redis-sentinel-1
+    command: redis-sentinel /etc/redis-sentinel/sentinel.conf
+    ports:
+      - "26379:26379"
+    volumes:
+      - ./sentinel1.conf:/etc/redis-sentinel/sentinel.conf
+    networks:
+      - ml-platform-network
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+
+  # RedisInsight for GUI management
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: ml-redisinsight
+    ports:
+      - "8001:8001"
+    volumes:
+      - redisinsight:/db
+    networks:
+      - ml-platform-network
+
+  # Redis Exporter for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: ml-redis-exporter
+    environment:
+      REDIS_ADDR: redis-master:6379
+      REDIS_PASSWORD: redispass123
+    ports:
+      - "9121:9121"
+    networks:
+      - ml-platform-network
+    depends_on:
+      - redis-master
+
+networks:
+  ml-platform-network:
+    external: true
+
+volumes:
+  redis_master:
+  redis_replica_1:
+  redis_replica_2:
+  redisinsight:
