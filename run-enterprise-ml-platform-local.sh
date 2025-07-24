@@ -43,13 +43,13 @@ wait_for_service() {
     echo -e "${YELLOW}Waiting for $service to be ready...${NC}"
     while [ $attempt -le $max_attempts ]; do
         if kubectl get pods -n $namespace -l app=$service 2>/dev/null | grep -q "Running"; then
-            echo -e "${GREEN}✓ $service is ready${NC}"
+            echo -e "${GREEN}$service is ready${NC}"
             return 0
         fi
         sleep 5
         ((attempt++))
     done
-    echo -e "${RED}✗ $service failed to start${NC}"
+    echo -e "${RED}$service failed to start${NC}"
     return 1
 }
 
@@ -77,7 +77,7 @@ install_if_missing() {
         echo "Installing $tool..."
         eval "$install_cmd"
     else
-        echo "✓ $tool already installed"
+        echo "$tool already installed"
     fi
 }
 
@@ -94,7 +94,7 @@ if ! command -v docker &> /dev/null; then
     sudo systemctl start docker
     sudo systemctl enable docker
 else
-    echo "✓ Docker already installed"
+    echo "Docker already installed"
 fi
 
 # Install kubectl
@@ -104,7 +104,7 @@ if ! command -v kubectl &> /dev/null; then
     chmod +x kubectl
     sudo mv kubectl /usr/local/bin/
 else
-    echo "✓ kubectl already installed"
+    echo "kubectl already installed"
 fi
 
 # Install minikube
@@ -114,7 +114,7 @@ if ! command -v minikube &> /dev/null; then
     chmod +x minikube-linux-amd64
     sudo mv minikube-linux-amd64 /usr/local/bin/minikube
 else
-    echo "✓ minikube already installed"
+    echo "minikube already installed"
 fi
 
 # Install Terraform
@@ -125,7 +125,7 @@ if ! command -v terraform &> /dev/null; then
     sudo apt update
     sudo apt install -y terraform
 else
-    echo "✓ Terraform already installed"
+    echo "Terraform already installed"
 fi
 
 # Install Ansible
@@ -135,7 +135,7 @@ if ! command -v ansible &> /dev/null; then
     sudo add-apt-repository --yes --update ppa:ansible/ansible
     sudo apt install -y ansible
 else
-    echo "✓ Ansible already installed"
+    echo "Ansible already installed"
 fi
 
 # Install Helm
@@ -143,7 +143,7 @@ if ! command -v helm &> /dev/null; then
     echo "Installing Helm..."
     curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 else
-    echo "✓ Helm already installed"
+    echo "Helm already installed"
 fi
 
 # Install other required packages
@@ -184,6 +184,7 @@ if systemctl is-failed docker >/dev/null 2>&1; then
     # Recreate the TCP configuration that was working before
     sudo mkdir -p /etc/systemd/system/docker.service.d
     sudo tee /etc/systemd/system/docker.service.d/override.conf << 'EOF' > /dev/null
+
 [Service]
 ExecStart=
 ExecStart=/usr/bin/dockerd -H fd:// -H tcp://127.0.0.1:2375
@@ -207,7 +208,7 @@ fi
 
 # Final check
 if docker ps >/dev/null 2>&1; then
-    echo "✓ Docker is running and accessible via TCP at $DOCKER_HOST"
+    echo "Docker is running and accessible via TCP at $DOCKER_HOST"
 else
     echo -e "${RED}Error: Cannot connect to Docker.${NC}"
     echo "Please check Docker manually with: sudo systemctl status docker"
@@ -504,7 +505,7 @@ services:
     networks:
       - ml-platform-network
 
-  # MinIO (S3 compatible storage)
+  # MinIO with S3 compatible storage
   minio:
     image: minio/minio:latest
     container_name: ml-minio
@@ -1091,37 +1092,6 @@ pymongo==4.3.3
 minio==7.2.0
 aiokafka==0.10.0
 joblib==1.3.2
-
-# fastapi==0.104.1
-# uvicorn==0.24.0
-# pydantic==2.4.2
-# sqlalchemy==2.0.23
-# alembic==1.12.1
-# psycopg2-binary==2.9.9
-# redis==5.0.1
-# celery==5.3.4
-# flower==2.0.1
-# numpy==1.26.2
-# pandas==2.1.3
-# scikit-learn==1.3.2
-# tensorflow==2.15.0
-# torch==2.1.1
-# mlflow==2.9.1
-# wandb==0.16.1
-# optuna==3.4.0
-# prometheus-client==0.19.0
-# opentelemetry-api==1.21.0
-# opentelemetry-sdk==1.21.0
-# opentelemetry-instrumentation-fastapi==0.42b0
-# pytest==7.4.3
-# pytest-asyncio==0.21.1
-# python-multipart==0.0.6
-# python-jose[cryptography]==3.3.0
-# passlib[bcrypt]==1.7.4
-# python-dotenv==1.0.0
-# httpx==0.25.2
-# minio==7.2.0
-# kubernetes==28.1.0
 REQ_EOF
 
 # Create a comprehensive app.py
@@ -1644,72 +1614,16 @@ cd ../..
 echo -e "\n${BLUE}Step 12: Building ML Platform image...${NC}"
 cd services/ml-platform
 
-# Remove the problematic minikube ssh commands
-# Just use the registry directly since it's already configured by minikube
-
-# Enable insecure registry for minikube
-# minikube ssh "echo '{\"insecure-registries\": [\"localhost:32770\"]}' | sudo tee /etc/docker/daemon.json"
-# minikube ssh "sudo systemctl restart docker"
-
 # Build and tag image for minikube's registry ADDED
 eval $(minikube docker-env)  # This sets Docker to use minikube's Docker daemon
 
 # Build and push image // localhost does not exist in minikube
 docker build -t localhost:32770/ml-platform:latest .
-# docker build -t ml-platform:latest .
-# docker push localhost:32770/ml-platform:latest
-
-# Keep using minikube's docker env to tag the image
-# docker tag ml-platform:latest localhost:5000/ml-platform:latest
-
-
-# No need to push - the image is already in minikube's docker daemon
-# and accessible at localhost:32770/ml-platform:latest
 
 # Reset docker env ADDED
 eval $(minikube docker-env -u)
 
-# Push using kubectl port-forward to access the registry
-# Setup port forwarding to access the registry
-# echo "Setting up registry port-forward..."
-# kubectl port-forward -n kube-system svc/registry 5000:80 > /dev/null 2>&1 &
-# REGISTRY_PF_PID=$!
-# sleep 5
-
-# Push the image from minikube to the registry
-# First, we need to pull the image from minikube to host
-# docker pull $(minikube ip):5000/ml-platform:latest || {
-    # If that doesn't work, use minikube's docker daemon to push
-#     eval $(minikube docker-env)
-#     docker push localhost:5000/ml-platform:latest
-#     eval $(minikube docker-env -u)
-# }
-
-# Kill the port-forward
-# kill $REGISTRY_PF_PID 2>/dev/null || true
 cd ../..
-
-# Even simpler, since we're building inside minikube's Docker daemon, we don't need to push at all. 
-# Just update Kubernetes deployment to use the image directly:
-# Step 12: Build ML Platform image
-# echo -e "\n${BLUE}Step 12: Building ML Platform image...${NC}"
-# cd services/ml-platform
-
-# Build image directly in minikube's docker daemon
-# eval $(minikube docker-env)
-# docker build -t ml-platform:latest .
-
-# Reset docker env
-# eval $(minikube docker-env -u)
-# cd ../..
-
-# Then update ml-platform-deployment.yml to use 'imagePullPolicy: Never'
-# (simplest approach for local development with minikube):
-# spec:
-#   containers:
-#   - name: ml-platform
-#     image: ml-platform:latest
-#     imagePullPolicy: Never  # This tells k8s to use the local image
 
 # Step 13: Deploy to Kubernetes
 echo -e "\n${BLUE}Step 13: Deploying to Kubernetes...${NC}" 
@@ -1774,9 +1688,9 @@ redis_cmd() {
 
 echo -e "\n${BLUE}1. Testing Basic Connectivity${NC}"
 if redis_cmd ping | grep -q PONG; then
-    echo -e "${GREEN}✓ Redis is responding${NC}"
+    echo -e "${GREEN}Redis is responding${NC}"
 else
-    echo -e "${RED}✗ Redis is not responding${NC}"
+    echo -e "${RED}Redis is not responding${NC}"
     exit 1
 fi
 
@@ -2065,10 +1979,10 @@ kubectl get all -n monitoring
 # Test API endpoint
 echo -e "\n3. Testing API endpoint:"
 if curl -s http://localhost:8000/health | jq . > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ API is healthy${NC}"
+    echo -e "${GREEN}API is healthy${NC}"
     curl -s http://localhost:8000/health | jq .
 else
-    echo -e "${RED}✗ API is not responding${NC}"
+    echo -e "${RED}API is not responding${NC}"
 fi
 
 # Test databases
@@ -2076,37 +1990,37 @@ echo -e "\n4. Testing databases:"
 
 # PostgreSQL
 if docker exec ml-postgres-primary psql -U mluser -d mlplatform -c "SELECT version();" > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ PostgreSQL is working${NC}"
+    echo -e "${GREEN}PostgreSQL is working${NC}"
 else
-    echo -e "${RED}✗ PostgreSQL is not working${NC}"
+    echo -e "${RED}PostgreSQL is not working${NC}"
 fi
 
 # Redis
 if docker exec ml-redis-master redis-cli -a redispass123 ping | grep -q PONG; then
-    echo -e "${GREEN}✓ Redis is working${NC}"
+    echo -e "${GREEN}Redis is working${NC}"
 else
-    echo -e "${RED}✗ Redis is not working${NC}"
+    echo -e "${RED}Redis is not working${NC}"
 fi
 
 # MongoDB
 if docker exec ml-mongodb mongosh -u admin -p mongopass123 --eval "db.version()" > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ MongoDB is working${NC}"
+    echo -e "${GREEN}MongoDB is working${NC}"
 else
-    echo -e "${RED}✗ MongoDB is not working${NC}"
+    echo -e "${RED}MongoDB is not working${NC}"
 fi
 
 # Test monitoring
 echo -e "\n5. Testing monitoring:"
 if curl -s http://localhost:9090/api/v1/query?query=up | grep -q "success"; then
-    echo -e "${GREEN}✓ Prometheus is working${NC}"
+    echo -e "${GREEN}Prometheus is working${NC}"
 else
-    echo -e "${RED}✗ Prometheus is not working${NC}"
+    echo -e "${RED}Prometheus is not working${NC}"
 fi
 
 if curl -s http://localhost:3000/api/health | grep -q "ok"; then
-    echo -e "${GREEN}✓ Grafana is working${NC}"
+    echo -e "${GREEN}Grafana is working${NC}"
 else
-    echo -e "${RED}✗ Grafana is not working${NC}"
+    echo -e "${RED}Grafana is not working${NC}"
 fi
 
 # Test Redis cluster
