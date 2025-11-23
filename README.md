@@ -156,7 +156,7 @@ KUBECONFIG – sets the path to the local kubeconfig file.
 
 Checks:
 Ensures script is not run in a virtual environment.
-Verifies required commands are installed.
+Verifies required installation commands complete.
 
 2. Prerequisite Installation via install-prerequisites.sh
 
